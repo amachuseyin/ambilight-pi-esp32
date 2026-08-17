@@ -1,0 +1,741 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Ambilight Calibration</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      background: #101114;
+      color: #f4f4f5;
+    }
+    body {
+      margin: 0;
+      padding: 20px;
+    }
+    main {
+      display: grid;
+      grid-template-columns: minmax(360px, 1.2fr) minmax(340px, 0.8fr);
+      gap: 20px;
+      max-width: 1280px;
+      margin: 0 auto;
+    }
+    section {
+      background: #181a20;
+      border: 1px solid #30333d;
+      border-radius: 14px;
+      padding: 16px;
+    }
+    h1, h2 {
+      margin: 0 0 12px;
+      font-weight: 650;
+    }
+    h1 {
+      font-size: 22px;
+    }
+    h2 {
+      font-size: 16px;
+      color: #d7d7dc;
+    }
+    #status {
+      color: #fbbf24;
+      margin-bottom: 12px;
+    }
+    #status.ok {
+      color: #34d399;
+    }
+    #status.bad {
+      color: #fb7185;
+    }
+    #preview {
+      display: block;
+      width: 100%;
+      max-height: 72vh;
+      object-fit: contain;
+      background: #050506;
+      border-radius: 10px;
+      border: 1px solid #30333d;
+      cursor: crosshair;
+      -webkit-user-drag: none;
+      user-drag: none;
+    }
+    #previewWrap {
+      position: relative;
+      display: inline-block;
+      width: 100%;
+      user-select: none;
+    }
+    #selection {
+      position: absolute;
+      display: none;
+      border: 2px solid #fbbf24;
+      background: rgba(251, 191, 36, 0.18);
+      pointer-events: none;
+      box-sizing: border-box;
+    }
+    .control {
+      display: grid;
+      grid-template-columns: 110px 1fr 70px;
+      gap: 10px;
+      align-items: center;
+      margin: 10px 0;
+    }
+    label {
+      color: #e5e7eb;
+      font-size: 14px;
+    }
+    input[type="range"] {
+      width: 100%;
+    }
+    input[type="number"], select, textarea {
+      width: 100%;
+      box-sizing: border-box;
+      background: #0d0f13;
+      color: #f4f4f5;
+      border: 1px solid #3b3f4a;
+      border-radius: 8px;
+      padding: 8px;
+    }
+    textarea {
+      min-height: 94px;
+      resize: vertical;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-size: 13px;
+    }
+    button {
+      background: #2563eb;
+      color: white;
+      border: 0;
+      border-radius: 9px;
+      padding: 9px 12px;
+      cursor: pointer;
+      font-weight: 600;
+    }
+    button.secondary {
+      background: #374151;
+    }
+    .buttons {
+      display: flex;
+      gap: 10px;
+      flex-wrap: wrap;
+      margin: 12px 0;
+    }
+    .hint {
+      color: #a1a1aa;
+      font-size: 13px;
+      line-height: 1.45;
+    }
+    .swatches {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 8px;
+      margin-top: 10px;
+    }
+    .swatch {
+      min-height: 44px;
+      border-radius: 8px;
+      border: 1px solid rgba(255,255,255,.2);
+      cursor: pointer;
+    }
+    .auto-grid {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 8px;
+      margin: 10px 0;
+    }
+    .auto-grid button.done {
+      outline: 2px solid #34d399;
+    }
+    #autoStatus {
+      background: #0d0f13;
+      border: 1px solid #30333d;
+      border-radius: 8px;
+      padding: 10px;
+      min-height: 42px;
+      white-space: pre-wrap;
+    }
+    pre {
+      background: #0d0f13;
+      border: 1px solid #30333d;
+      border-radius: 8px;
+      padding: 10px;
+      max-height: 240px;
+      overflow: auto;
+      white-space: pre-wrap;
+      font-size: 12px;
+    }
+    #testOverlay {
+      position: fixed;
+      inset: 0;
+      display: none;
+      z-index: 10;
+      align-items: center;
+      justify-content: center;
+      color: white;
+      font-size: 36px;
+      text-shadow: 0 2px 8px rgba(0,0,0,.5);
+    }
+    #testOverlay.chart {
+      display: none;
+      grid-template-columns: repeat(4, 1fr);
+      grid-template-rows: repeat(3, 1fr);
+      gap: 0;
+      align-items: stretch;
+      justify-content: stretch;
+      font-size: 22px;
+      text-shadow: 0 1px 4px rgba(0,0,0,.55);
+    }
+    .chartCell {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-weight: 700;
+    }
+    @media (max-width: 900px) {
+      main {
+        grid-template-columns: 1fr;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div id="testOverlay"></div>
+  <main>
+    <section>
+      <h1>Ambilight Calibration</h1>
+      <div id="status">Connecting…</div>
+      <div id="previewWrap">
+        <img id="preview" alt="Camera preview will appear here when capture7.py sends frames">
+        <div id="selection"></div>
+      </div>
+      <p class="hint">
+        For footage, run capture without <code>--no-frame</code>. Use <code>--preview</code> if you want zone boxes drawn on the footage.
+      </p>
+      <h2>Screen test colors</h2>
+      <p class="hint">Click a swatch to fill this browser window with a test color. Press Esc or click again to exit.</p>
+      <div class="swatches" id="swatches"></div>
+    </section>
+
+    <section>
+      <h2>Live color controls</h2>
+      <div class="control">
+        <label for="red_gain">Red gain</label>
+        <input id="red_gain" type="range" min="0.50" max="1.60" step="0.01">
+        <input data-for="red_gain" type="number" min="0" step="0.01">
+      </div>
+      <div class="control">
+        <label for="green_gain">Green gain</label>
+        <input id="green_gain" type="range" min="0.50" max="1.60" step="0.01">
+        <input data-for="green_gain" type="number" min="0" step="0.01">
+      </div>
+      <div class="control">
+        <label for="blue_gain">Blue gain</label>
+        <input id="blue_gain" type="range" min="0.30" max="1.60" step="0.01">
+        <input data-for="blue_gain" type="number" min="0" step="0.01">
+      </div>
+      <div class="control">
+        <label for="saturation">Saturation</label>
+        <input id="saturation" type="range" min="0.50" max="1.80" step="0.01">
+        <input data-for="saturation" type="number" min="0" step="0.01">
+      </div>
+      <div class="control">
+        <label for="black_level">Black level</label>
+        <input id="black_level" type="range" min="0" max="80" step="1">
+        <input data-for="black_level" type="number" min="0" step="1">
+      </div>
+      <div class="control">
+        <label for="led_offset">LED offset</label>
+        <input id="led_offset" type="range" min="-236" max="236" step="1">
+        <input data-for="led_offset" type="number" step="1">
+      </div>
+      <div class="control">
+        <label for="color_order">Channel order</label>
+        <select id="color_order">
+          <option>rgb</option>
+          <option>rbg</option>
+          <option>grb</option>
+          <option>gbr</option>
+          <option>brg</option>
+          <option>bgr</option>
+        </select>
+        <span></span>
+      </div>
+
+      <div class="buttons">
+        <button id="copy">Copy args</button>
+        <button class="secondary" id="neutral">Neutral gains</button>
+        <button class="secondary" id="warmer">Less green/blue</button>
+      </div>
+
+      <h2>Assisted auto-calibration</h2>
+      <p class="hint">
+        Use these on the screen the Pi camera sees. Each button displays a fullscreen color, waits briefly, then captures that color from the camera.
+        Capture Red, Green, Blue, then White. The tool solves a color matrix automatically.
+      </p>
+      <div class="auto-grid">
+        <button data-auto="red" style="background:#b91c1c">Auto Red</button>
+        <button data-auto="green" style="background:#15803d">Auto Green</button>
+        <button data-auto="blue" style="background:#1d4ed8">Auto Blue</button>
+        <button data-auto="white" style="background:#f4f4f5;color:#111827">Auto White</button>
+      </div>
+      <div id="autoStatus" class="hint">No auto samples yet.</div>
+
+      <h2>Patch calibration</h2>
+      <p class="hint">
+        Click “Show RGB chart”, then click two opposite corners around a matching patch in the camera preview.
+        Choose the patch name and sample it. Use at least red, green, and blue; more patches improve the matrix.
+      </p>
+      <div class="buttons">
+        <button id="showChart">Show RGB chart</button>
+        <select id="patchTarget"></select>
+        <button id="samplePatch">Sample selected patch</button>
+      </div>
+      <p class="hint" id="patchStatus">No patch selected.</p>
+
+      <h2>Arguments to keep</h2>
+      <textarea id="args" readonly></textarea>
+      <p class="hint">
+        If grays look green, lower green gain first. If yellows look white, raise saturation slightly. If pinks look blue, lower blue gain.
+      </p>
+
+      <h2>Config, status, service</h2>
+      <div class="control">
+        <label for="blackbar_detect">Black bars</label>
+        <input id="blackbar_detect" type="checkbox">
+        <span class="hint">auto crop</span>
+      </div>
+      <div class="control">
+        <label for="blackbar_threshold">Bar threshold</label>
+        <input id="blackbar_threshold" type="range" min="0" max="80" step="1">
+        <input data-for="blackbar_threshold" type="number" min="0" step="1">
+      </div>
+      <div class="buttons">
+        <button id="saveConfig">Save to config.json</button>
+        <button class="secondary" id="refreshStatus">Refresh status</button>
+        <button class="secondary" id="loadLogs">Load logs</button>
+        <button class="secondary" id="restartService">Restart service</button>
+      </div>
+      <pre id="systemStatus">Status not loaded yet.</pre>
+    </section>
+  </main>
+
+  <script>
+    const defaults = {
+      red_gain: 0.94,
+      green_gain: 1.10,
+      blue_gain: 0.78,
+      saturation: 1.12,
+      black_level: 35,
+      led_offset: 0,
+      color_order: "rgb",
+      color_matrix: [1, 0, 0, 0, 1, 0, 0, 0, 1],
+      auto_samples: {},
+      blackbar_detect: false,
+      blackbar_threshold: 22,
+      blackbar_margin: 0.02
+    };
+    const state = { ...defaults };
+    const numericFields = ["red_gain", "green_gain", "blue_gain", "saturation", "black_level", "led_offset", "blackbar_threshold"];
+    const statusEl = document.getElementById("status");
+    const previewEl = document.getElementById("preview");
+    const previewWrapEl = document.getElementById("previewWrap");
+    const selectionEl = document.getElementById("selection");
+    const patchTargetEl = document.getElementById("patchTarget");
+    const patchStatusEl = document.getElementById("patchStatus");
+    const argsEl = document.getElementById("args");
+    const autoStatusEl = document.getElementById("autoStatus");
+    const systemStatusEl = document.getElementById("systemStatus");
+    let ws;
+    let sendTimer;
+    let firstCorner = null;
+    let selection = null;
+
+    function setStatus(text, cls = "") {
+      statusEl.textContent = text;
+      statusEl.className = cls;
+    }
+
+    function formatNumber(value, field) {
+      if (field === "black_level" || field === "led_offset") return String(Math.round(Number(value)));
+      if (field === "blackbar_threshold") return String(Math.round(Number(value)));
+      return Number(value).toFixed(2);
+    }
+
+    function cliArgs() {
+      return [
+        `--color-order ${state.color_order}`,
+        `--red-gain ${Number(state.red_gain).toFixed(3)}`,
+        `--green-gain ${Number(state.green_gain).toFixed(3)}`,
+        `--blue-gain ${Number(state.blue_gain).toFixed(3)}`,
+        `--saturation ${Number(state.saturation).toFixed(3)}`,
+        `--color-matrix "${state.color_matrix.map(v => Number(v).toFixed(6)).join(" ")}"`,
+        `--black-level ${Number(state.black_level).toFixed(1)}`,
+        `--led-offset ${Math.round(Number(state.led_offset))}`,
+        state.blackbar_detect ? `--blackbar-detect --blackbar-threshold ${Number(state.blackbar_threshold).toFixed(1)}` : ""
+      ].join(" ");
+    }
+
+    function renderAutoStatus(lastMessage = "") {
+      const names = ["red", "green", "blue", "white"];
+      const samples = state.auto_samples || {};
+      const lines = names.map(name => {
+        const sample = samples[name];
+        if (!sample) return `${name}: not captured`;
+        const measured = sample.measured.map(v => Number(v).toFixed(1)).join(", ");
+        return `${name}: measured RGB ${measured}`;
+      });
+      autoStatusEl.textContent = [lastMessage, ...lines].filter(Boolean).join("\n");
+      for (const button of document.querySelectorAll("[data-auto]")) {
+        button.classList.toggle("done", Boolean(samples[button.dataset.auto]));
+      }
+    }
+
+    function renderControls() {
+      for (const field of numericFields) {
+        const range = document.getElementById(field);
+        const number = document.querySelector(`input[data-for="${field}"]`);
+        range.value = state[field];
+        number.value = formatNumber(state[field], field);
+      }
+      document.getElementById("color_order").value = state.color_order;
+      document.getElementById("blackbar_detect").checked = Boolean(state.blackbar_detect);
+      argsEl.value = cliArgs();
+      renderAutoStatus();
+    }
+
+    function sendCalibration() {
+      if (!ws || ws.readyState !== WebSocket.OPEN) return;
+      clearTimeout(sendTimer);
+      sendTimer = setTimeout(() => {
+        ws.send(JSON.stringify({ type: "calibration", values: state }));
+      }, 60);
+    }
+
+    const targetColors = {
+      red: [255, 0, 0],
+      green: [0, 255, 0],
+      blue: [0, 0, 255],
+      white: [255, 255, 255],
+      gray: [128, 128, 128],
+      yellow: [255, 255, 0],
+      cyan: [0, 255, 255],
+      magenta: [255, 0, 255],
+      orange: [255, 128, 0],
+      pink: [255, 64, 192],
+      warm_white: [255, 217, 170]
+    };
+
+    for (const name of Object.keys(targetColors)) {
+      const option = document.createElement("option");
+      option.value = name;
+      option.textContent = name.replace("_", " ");
+      patchTargetEl.appendChild(option);
+    }
+
+    function previewImageRect() {
+      const wrap = previewWrapEl.getBoundingClientRect();
+      const img = previewEl.getBoundingClientRect();
+      return {
+        left: img.left - wrap.left,
+        top: img.top - wrap.top,
+        width: img.width,
+        height: img.height,
+        pageLeft: img.left,
+        pageTop: img.top
+      };
+    }
+
+    function pointInImage(event) {
+      const r = previewImageRect();
+      return {
+        x: Math.max(0, Math.min(r.width, event.clientX - r.pageLeft)),
+        y: Math.max(0, Math.min(r.height, event.clientY - r.pageTop)),
+        rect: r
+      };
+    }
+
+    function updateSelectionBox(a, b) {
+      const r = previewImageRect();
+      const x0 = Math.max(0, Math.min(a.x, b.x));
+      const y0 = Math.max(0, Math.min(a.y, b.y));
+      const x1 = Math.min(r.width, Math.max(a.x, b.x));
+      const y1 = Math.min(r.height, Math.max(a.y, b.y));
+      selectionEl.style.display = "block";
+      selectionEl.style.left = `${r.left + x0}px`;
+      selectionEl.style.top = `${r.top + y0}px`;
+      selectionEl.style.width = `${Math.max(1, x1 - x0)}px`;
+      selectionEl.style.height = `${Math.max(1, y1 - y0)}px`;
+      selection = {
+        x: x0 / r.width,
+        y: y0 / r.height,
+        w: (x1 - x0) / r.width,
+        h: (y1 - y0) / r.height
+      };
+      patchStatusEl.textContent = `Selected ${(selection.w * 100).toFixed(1)}% x ${(selection.h * 100).toFixed(1)}% patch.`;
+    }
+
+    previewEl.addEventListener("dragstart", (event) => {
+      event.preventDefault();
+    });
+
+    previewWrapEl.addEventListener("click", (event) => {
+      if (!previewEl.src) return;
+      const point = pointInImage(event);
+      if (!firstCorner) {
+        firstCorner = point;
+        selection = null;
+        selectionEl.style.display = "none";
+        patchStatusEl.textContent = "First corner set. Click the opposite corner.";
+        return;
+      }
+      updateSelectionBox(firstCorner, point);
+      firstCorner = null;
+    });
+
+    for (const field of numericFields) {
+      const range = document.getElementById(field);
+      const number = document.querySelector(`input[data-for="${field}"]`);
+      range.addEventListener("input", () => {
+        state[field] = Number(range.value);
+        number.value = formatNumber(state[field], field);
+        argsEl.value = cliArgs();
+        sendCalibration();
+      });
+      number.addEventListener("change", () => {
+        state[field] = Number(number.value);
+        renderControls();
+        sendCalibration();
+      });
+    }
+
+    document.getElementById("color_order").addEventListener("change", (event) => {
+      state.color_order = event.target.value;
+      argsEl.value = cliArgs();
+      sendCalibration();
+    });
+    document.getElementById("blackbar_detect").addEventListener("change", (event) => {
+      state.blackbar_detect = event.target.checked;
+      argsEl.value = cliArgs();
+      sendCalibration();
+    });
+
+    function configPayload() {
+      return {
+        color_order: state.color_order,
+        red_gain: Number(state.red_gain),
+        green_gain: Number(state.green_gain),
+        blue_gain: Number(state.blue_gain),
+        saturation: Number(state.saturation),
+        color_matrix: state.color_matrix.map(Number),
+        black_level: Number(state.black_level),
+        led_offset: Math.round(Number(state.led_offset)),
+        blackbar_detect: Boolean(state.blackbar_detect),
+        blackbar_threshold: Number(state.blackbar_threshold),
+        blackbar_margin: Number(state.blackbar_margin || 0.02)
+      };
+    }
+
+    async function api(path, options = {}) {
+      const response = await fetch(path, options);
+      const data = await response.json();
+      return data;
+    }
+
+    async function refreshStatus() {
+      const data = await api("/api/status");
+      systemStatusEl.textContent = JSON.stringify(data, null, 2);
+    }
+
+    document.getElementById("saveConfig").addEventListener("click", async () => {
+      const data = await api("/api/config", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(configPayload())
+      });
+      systemStatusEl.textContent = data.ok ? "Saved config.json\n" + JSON.stringify(data.config, null, 2) : JSON.stringify(data, null, 2);
+    });
+    document.getElementById("refreshStatus").addEventListener("click", refreshStatus);
+    document.getElementById("loadLogs").addEventListener("click", async () => {
+      const data = await api("/api/logs");
+      systemStatusEl.textContent = data.logs || JSON.stringify(data, null, 2);
+    });
+    document.getElementById("restartService").addEventListener("click", async () => {
+      const data = await api("/api/service", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "restart" })
+      });
+      systemStatusEl.textContent = JSON.stringify(data, null, 2);
+    });
+
+    function showOverlay(name, color) {
+      overlay.className = "";
+      overlay.style.background = color;
+      overlay.style.color = color === "#000000" ? "#ffffff" : "#000000";
+      overlay.textContent = name;
+      overlay.style.display = "flex";
+    }
+
+    function showChart() {
+      overlay.className = "chart";
+      overlay.innerHTML = "";
+      for (const [name, rgb] of Object.entries(targetColors)) {
+        const cell = document.createElement("div");
+        cell.className = "chartCell";
+        cell.style.background = `rgb(${rgb[0]}, ${rgb[1]}, ${rgb[2]})`;
+        cell.style.color = (name === "white" || name === "yellow" || name === "cyan" || name === "warm_white") ? "#111827" : "#ffffff";
+        cell.textContent = name.replace("_", " ");
+        overlay.appendChild(cell);
+      }
+      overlay.style.display = "grid";
+    }
+
+    function autoSample(name) {
+      const colors = {
+        red: "#ff0000",
+        green: "#00ff00",
+        blue: "#0000ff",
+        white: "#ffffff"
+      };
+      const labels = {
+        red: "Sampling RED…",
+        green: "Sampling GREEN…",
+        blue: "Sampling BLUE…",
+        white: "Sampling WHITE…"
+      };
+      showOverlay(labels[name], colors[name]);
+      renderAutoStatus(`Showing ${name}. Sampling in 1.2s…`);
+      setTimeout(() => {
+        if (!ws || ws.readyState !== WebSocket.OPEN) return;
+        ws.send(JSON.stringify({ type: "command", command: "auto_sample", target: name }));
+        renderAutoStatus(`Requested ${name} sample. Waiting for capture7.py…`);
+      }, 1200);
+    }
+
+    for (const button of document.querySelectorAll("[data-auto]")) {
+      button.addEventListener("click", () => autoSample(button.dataset.auto));
+    }
+
+    document.getElementById("showChart").addEventListener("click", showChart);
+    document.getElementById("samplePatch").addEventListener("click", () => {
+      if (!selection || selection.w < 0.005 || selection.h < 0.005) {
+        patchStatusEl.textContent = "Click two opposite corners on the preview first.";
+        return;
+      }
+      if (!ws || ws.readyState !== WebSocket.OPEN) {
+        patchStatusEl.textContent = "WebSocket is not connected.";
+        return;
+      }
+      const label = patchTargetEl.value;
+      ws.send(JSON.stringify({
+        type: "command",
+        command: "patch_sample",
+        label,
+        target_rgb: targetColors[label],
+        rect: selection
+      }));
+      patchStatusEl.textContent = `Requested ${label} patch sample.`;
+    });
+
+    document.getElementById("copy").addEventListener("click", async () => {
+      await navigator.clipboard.writeText(cliArgs());
+    });
+
+    document.getElementById("neutral").addEventListener("click", () => {
+      Object.assign(state, {
+        red_gain: 1.0,
+        green_gain: 1.0,
+        blue_gain: 1.0,
+        saturation: 1.0
+      });
+      renderControls();
+      sendCalibration();
+    });
+
+    document.getElementById("warmer").addEventListener("click", () => {
+      Object.assign(state, {
+        red_gain: 0.92,
+        green_gain: 0.96,
+        blue_gain: 0.68,
+        saturation: 1.18
+      });
+      renderControls();
+      sendCalibration();
+    });
+
+    function connect() {
+      const proto = location.protocol === "https:" ? "wss:" : "ws:";
+      ws = new WebSocket(`${proto}//${location.hostname}:8765`);
+      ws.addEventListener("open", () => {
+        setStatus("Connected. Waiting for capture frames…", "ok");
+        ws.send(JSON.stringify({ role: "viewer" }));
+        sendCalibration();
+      });
+      ws.addEventListener("close", () => {
+        setStatus("Disconnected. Reconnecting…", "bad");
+        setTimeout(connect, 1000);
+      });
+      ws.addEventListener("message", (event) => {
+        const data = JSON.parse(event.data);
+        if (data.type === "config") {
+          for (const key of Object.keys(state)) {
+            if (data[key] !== undefined) state[key] = data[key];
+          }
+          renderControls();
+          setStatus("Connected.", "ok");
+        }
+        if (data.type === "sample_result") {
+          state.color_matrix = data.color_matrix || state.color_matrix;
+          if (!state.auto_samples) state.auto_samples = {};
+          state.auto_samples[data.target] = {
+            measured: data.measured,
+            target: data.target_rgb || data.target,
+            label: data.label || data.target
+          };
+          argsEl.value = data.flags || cliArgs();
+          const label = data.label || data.target;
+          renderAutoStatus(`${label} captured. Matrix ${data.solved ? "updated" : "needs at least 3 samples"}.`);
+          patchStatusEl.textContent = `${label} measured RGB ${data.measured.map(v => Number(v).toFixed(1)).join(", ")}.`;
+        }
+        if (data.type === "frame") {
+          const image = data.image || data.frame;
+          if (image) previewEl.src = `data:image/jpeg;base64,${image}`;
+        }
+      });
+    }
+
+    const swatchColors = [
+      ["Red", "#ff0000"], ["Green", "#00ff00"], ["Blue", "#0000ff"], ["White", "#ffffff"],
+      ["Gray", "#808080"], ["Yellow", "#ffff00"], ["Orange", "#ff8000"], ["Pink", "#ff40c0"],
+      ["Cyan", "#00ffff"], ["Magenta", "#ff00ff"], ["Warm white", "#ffd9aa"], ["Black", "#000000"]
+    ];
+    const overlay = document.getElementById("testOverlay");
+    const swatches = document.getElementById("swatches");
+    for (const [name, color] of swatchColors) {
+      const button = document.createElement("button");
+      button.className = "swatch";
+      button.style.background = color;
+      button.title = name;
+      button.addEventListener("click", () => {
+        showOverlay(name, color);
+      });
+      swatches.appendChild(button);
+    }
+    overlay.addEventListener("click", () => overlay.style.display = "none");
+    document.addEventListener("keydown", (event) => {
+      if (event.key === "Escape") {
+        overlay.style.display = "none";
+        firstCorner = null;
+        selection = null;
+        selectionEl.style.display = "none";
+        patchStatusEl.textContent = "Selection cleared.";
+      }
+    });
+
+    renderControls();
+    connect();
+  </script>
+</body>
+</html>
