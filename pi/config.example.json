@@ -12,6 +12,7 @@
   "frame_quality": 45,
   "binary_output": true,
   "color_order": "bgr",
+  "brightness": 1.00,
   "red_gain": 1.00,
   "green_gain": 0.92,
   "blue_gain": 0.85,

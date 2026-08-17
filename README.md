@@ -190,6 +190,18 @@ Raise `smoothing_decay` for less smoothing and faster response. Lower it for
 steadier LEDs. Turn smoothing off from the dashboard if absolute lowest latency
 matters more than flicker control.
 
+## Brightness
+
+The dashboard has a `Brightness` slider under live color controls. It scales the
+final LED output from `0.0` to `1.0` without changing color calibration:
+
+```json
+"brightness": 1.0
+```
+
+Use this for night viewing or to reduce power draw. It can be changed live and
+saved to `config.json`.
+
 ## Latency Tuning
 
 The example config is set up for low latency:

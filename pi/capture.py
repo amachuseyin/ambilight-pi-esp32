@@ -273,6 +273,14 @@ def smooth_led_colors(args, colors):
     return np.clip(np.rint(smoothed), 0, 255).astype(np.uint8).tolist()
 
 
+def apply_brightness(colors, brightness):
+    brightness = max(0.0, min(1.0, float(brightness)))
+    if brightness >= 0.999:
+        return colors
+    scaled = np.asarray(colors, dtype=np.float32) * brightness
+    return np.clip(np.rint(scaled), 0, 255).astype(np.uint8).tolist()
+
+
 def encode_binary_frame(colors):
     # Binary frame format:
     #   bytes 0..3: "AMB1"
@@ -517,6 +525,7 @@ CALIBRATION_FIELDS = {
     "led_offset": int,
     "color_order": str,
     "color_matrix": parse_color_matrix,
+    "brightness": float,
     "blackbar_detect": parse_bool,
     "blackbar_threshold": float,
     "blackbar_margin": float,
@@ -538,6 +547,7 @@ def calibration_config(args):
         "led_order": args.led_order,
         "led_offset": args.led_offset,
         "color_order": args.color_order,
+        "brightness": args.brightness,
         "red_gain": args.red_gain,
         "green_gain": args.green_gain,
         "blue_gain": args.blue_gain,
@@ -582,7 +592,9 @@ def apply_calibration_update(args, data):
             continue
         if field == "color_order" and value not in CHANNEL_ORDERS:
             continue
-        if field in {"red_gain", "green_gain", "blue_gain", "saturation", "black_level", "smoothing_attack", "smoothing_decay", "smoothing_threshold"} and value < 0:
+        if field in {"red_gain", "green_gain", "blue_gain", "saturation", "black_level", "brightness", "smoothing_attack", "smoothing_decay", "smoothing_threshold"} and value < 0:
+            continue
+        if field == "brightness" and value > 1:
             continue
         if field in {"smoothing_attack", "smoothing_decay"} and value > 1:
             continue
@@ -820,6 +832,7 @@ async def run(args):
 
                 colors = apply_led_offset(colors, args.led_offset)
                 colors = smooth_led_colors(args, colors)
+                colors = apply_brightness(colors, args.brightness)
                 payload = {"type": "frame", "colors": colors}
 
                 if args.send_frame and loop_count % args.frame_every == 0:
@@ -919,6 +932,7 @@ def parse_args():
     p.add_argument("--red-gain", type=float, default=DEFAULT_RED_GAIN)
     p.add_argument("--green-gain", type=float, default=DEFAULT_GREEN_GAIN)
     p.add_argument("--blue-gain", type=float, default=DEFAULT_BLUE_GAIN)
+    p.add_argument("--brightness", type=float, default=1.0)
     p.add_argument("--saturation", type=float, default=DEFAULT_SATURATION)
     p.add_argument("--color-matrix", type=parse_color_matrix, default=DEFAULT_COLOR_MATRIX)
     p.add_argument(
@@ -967,6 +981,8 @@ def parse_args():
         p.error("--sample-inset must be >= 0 and <= 0.25")
     if args.red_gain < 0 or args.green_gain < 0 or args.blue_gain < 0:
         p.error("--red-gain, --green-gain, and --blue-gain must be >= 0")
+    if not (0.0 <= args.brightness <= 1.0):
+        p.error("--brightness must be between 0 and 1")
     if args.saturation < 0:
         p.error("--saturation must be >= 0")
     if not (0.0 <= args.smoothing_attack <= 1.0):
@@ -1002,6 +1018,7 @@ def load_config_into_args(args, config_path):
         "led_offset": "led_offset",
         "picamera_color_space": "picamera_color_space",
         "color_order": "color_order",
+        "brightness": "brightness",
         "red_gain": "red_gain",
         "green_gain": "green_gain",
         "blue_gain": "blue_gain",

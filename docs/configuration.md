@@ -14,6 +14,7 @@ Important fields:
 - `persp_width`, `persp_height`: corrected internal sampling size.
 - `send_frame`: set `false` for normal low-latency operation.
 - `color_order`: channel order sent to the ESP32.
+- `brightness`: final LED intensity multiplier from 0 to 1.
 - `red_gain`, `green_gain`, `blue_gain`: color tuning.
 - `black_level`: dark cutoff to keep LEDs off for near-black content.
 - `led_order`: physical perimeter order.
