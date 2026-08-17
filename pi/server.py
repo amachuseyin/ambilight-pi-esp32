@@ -16,6 +16,7 @@ import argparse
 import asyncio
 import contextlib
 import json
+import socket
 import subprocess
 import threading
 import http.server
@@ -36,8 +37,20 @@ CONFIG_PATH = Path(__file__).with_name("config.json")
 SERVICE_NAME = "ambilight-led.service"
 
 
+def set_tcp_nodelay(websocket):
+    transport = getattr(websocket, "transport", None)
+    if transport is None:
+        return
+    sock = transport.get_extra_info("socket")
+    if sock is None:
+        return
+    with contextlib.suppress(OSError):
+        sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+
+
 async def handler(websocket):
     global last_config, frames_routed, last_frame_time
+    set_tcp_nodelay(websocket)
 
     # First message from any client declares its role.
     try:
