@@ -161,6 +161,38 @@ The detector crops top/bottom black bars before sampling and smooths crop change
 to avoid flicker. If it reacts too much in dark scenes, disable it or raise/lower
 `blackbar_threshold` in small steps.
 
+## Latency Tuning
+
+The example config is set up for low latency:
+
+```json
+"width": 640,
+"height": 480,
+"fps": 40.0,
+"persp_width": 320,
+"persp_height": 180,
+"send_frame": false,
+"binary_output": true
+```
+
+The Pi capture code also requests low camera buffering from Picamera2:
+
+```text
+buffer_count=2
+queue=False
+```
+
+Recommended latency settings:
+
+- Keep `send_frame` false during normal watching.
+- Keep browser dashboard tabs closed unless calibrating.
+- Use `binary_output: true` after the ESP32 firmware is uploaded.
+- Use 640x480 capture unless you need higher calibration precision.
+- Reserve the Pi IP address in the router so the ESP reconnects quickly.
+
+If the ESP32 firmware does not include binary frame support yet, set
+`binary_output` back to `false`.
+
 ## Troubleshooting
 
 Check the Pi runtime:

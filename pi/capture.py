@@ -404,8 +404,12 @@ def open_camera(args):
         picam2 = None
         try:
             picam2 = Picamera2()
+            frame_us = int(1_000_000 / args.fps)
             config = picam2.create_video_configuration(
-                main={"size": (args.width, args.height), "format": "BGR888"}
+                main={"size": (args.width, args.height), "format": "BGR888"},
+                buffer_count=2,
+                queue=False,
+                controls={"FrameDurationLimits": (frame_us, frame_us)},
             )
             picam2.configure(config)
             picam2.start()
