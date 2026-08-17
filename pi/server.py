@@ -30,8 +30,10 @@ import websockets
 viewers = set()
 producers = set()
 client_info = {}
+telemetry_by_peer = {}
 last_config = None  # cache so late-joining viewers get the current zone layout
 frames_routed = 0
+frames_dropped = 0
 last_frame_time = None
 fps_window_start = time.time()
 fps_window_frames = 0
@@ -97,7 +99,7 @@ def system_health():
 
 
 async def handler(websocket):
-    global last_config, frames_routed, last_frame_time, fps_window_start, fps_window_frames, current_fps
+    global last_config, frames_routed, frames_dropped, last_frame_time, fps_window_start, fps_window_frames, current_fps
     set_tcp_nodelay(websocket)
 
     # First message from any client declares its role.
@@ -133,6 +135,10 @@ async def handler(websocket):
                 dead = set()
                 for v in list(viewers):
                     try:
+                        transport = getattr(v, "transport", None)
+                        if is_binary_frame and transport is not None and transport.get_write_buffer_size() > 65536:
+                            frames_dropped += 1
+                            continue
                         await v.send(message)
                     except websockets.ConnectionClosed:
                         dead.add(v)
@@ -167,6 +173,11 @@ async def handler(websocket):
                     continue
 
                 if data.get("type") not in {"calibration", "command"}:
+                    if data.get("type") == "telemetry":
+                        telemetry_by_peer[peer_label(websocket)] = {
+                            "received_at": time.time(),
+                            **data,
+                        }
                     continue
 
                 dead = set()
@@ -194,11 +205,13 @@ def public_status():
         "viewer_peers": [client_info.get(v, {}).get("peer") for v in viewers],
         "producer_peers": [client_info.get(p, {}).get("peer") for p in producers],
         "frames_routed": frames_routed,
+        "frames_dropped": frames_dropped,
         "fps": round(current_fps, 1),
         "last_frame_age_sec": None if last_frame_time is None else round(now - last_frame_time, 2),
         "has_config": last_config is not None,
         "config_path": str(CONFIG_PATH),
         "system": system_health(),
+        "esp_telemetry": telemetry_by_peer,
     }
 
 

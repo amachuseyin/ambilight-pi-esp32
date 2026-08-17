@@ -18,6 +18,7 @@ import colorsys
 import json
 import os
 from pathlib import Path
+import socket
 import struct
 import time
 
@@ -180,6 +181,60 @@ def avg_color_bgr(roi, black_level, red_gain, green_gain, blue_gain, saturation,
     return (clamp_u8(b), clamp_u8(g), clamp_u8(r))
 
 
+def colors_from_zones(frame, zones, args):
+    if frame is None or frame.size == 0 or not zones:
+        return []
+
+    cache_key = (frame.shape[1], frame.shape[0], tuple(zones))
+    if getattr(args, "_zone_cache_key", None) != cache_key:
+        rects = np.asarray(zones, dtype=np.int32)
+        args._zone_cache_key = cache_key
+        args._zone_x1 = rects[:, 0]
+        args._zone_y1 = rects[:, 1]
+        args._zone_x2 = rects[:, 2]
+        args._zone_y2 = rects[:, 3]
+        args._zone_area = np.maximum(
+            1,
+            (args._zone_x2 - args._zone_x1) * (args._zone_y2 - args._zone_y1),
+        ).astype(np.float32)
+
+    src = frame.astype(np.float32, copy=False)
+    integral = np.pad(src.cumsum(axis=0).cumsum(axis=1), ((1, 0), (1, 0), (0, 0)))
+    sums = (
+        integral[args._zone_y2, args._zone_x2]
+        - integral[args._zone_y1, args._zone_x2]
+        - integral[args._zone_y2, args._zone_x1]
+        + integral[args._zone_y1, args._zone_x1]
+    )
+    means = sums / args._zone_area[:, None]
+    b = means[:, 0]
+    g = means[:, 1]
+    r = means[:, 2]
+
+    m = np.asarray(args.color_matrix, dtype=np.float32).reshape(3, 3)
+    rgb = np.stack([r, g, b], axis=1) @ m.T
+    rgb[:, 0] *= args.red_gain
+    rgb[:, 1] *= args.green_gain
+    rgb[:, 2] *= args.blue_gain
+    rgb = np.minimum(rgb, 255.0)
+
+    if args.saturation != 1.0:
+        luma = (
+            (0.2126 * rgb[:, 0])
+            + (0.7152 * rgb[:, 1])
+            + (0.0722 * rgb[:, 2])
+        )
+        rgb = luma[:, None] + ((rgb - luma[:, None]) * args.saturation)
+
+    black = np.max(rgb, axis=1) < args.black_level
+    rgb[black] = 0.0
+    rgb = np.clip(np.rint(rgb), 0, 255).astype(np.uint8)
+
+    channel_index = {"r": 0, "g": 1, "b": 2}
+    order = [channel_index[name] for name in args.color_order]
+    return rgb[:, order].tolist()
+
+
 def edge_rects(width, height, top_z, bottom_z, left_z, right_z, sample_depth, sample_inset):
     depth_v = max(1, int(height * sample_depth))
     depth_h = max(1, int(width * sample_depth))
@@ -254,7 +309,7 @@ def apply_led_offset(colors, offset):
 
 
 def smooth_led_colors(args, colors):
-    if not args.smoothing_enabled:
+    if not args.smoothing_enabled or not args.pi_smoothing_enabled:
         args._smoothed_colors = None
         return colors
     current = np.asarray(colors, dtype=np.float32)
@@ -281,13 +336,23 @@ def apply_brightness(colors, brightness):
     return np.clip(np.rint(scaled), 0, 255).astype(np.uint8).tolist()
 
 
-def encode_binary_frame(colors):
+def encode_binary_frame(colors, sequence=0, protocol="AMB1"):
+    if protocol == "AMB1":
+        payload = bytearray()
+        payload.extend(b"AMB1")
+        payload.extend(struct.pack("<H", len(colors)))
+        for color in colors:
+            payload.extend(clamp_u8(channel) for channel in color[:3])
+        return bytes(payload)
+
     # Binary frame format:
-    #   bytes 0..3: "AMB1"
-    #   bytes 4..5: LED count, little-endian uint16
-    #   bytes 6..N: 3 bytes per LED, same channel order as JSON colors.
+    #   bytes 0..3: "AMB2"
+    #   bytes 4..7: sequence, little-endian uint32
+    #   bytes 8..9: LED count, little-endian uint16
+    #   bytes 10..N: 3 bytes per LED, same channel order as JSON colors.
     payload = bytearray()
-    payload.extend(b"AMB1")
+    payload.extend(b"AMB2")
+    payload.extend(struct.pack("<I", int(sequence) & 0xFFFFFFFF))
     payload.extend(struct.pack("<H", len(colors)))
     for color in colors:
         payload.extend(clamp_u8(channel) for channel in color[:3])
@@ -393,9 +458,29 @@ def crop_black_bars(frame, threshold, margin, args=None):
         return frame
 
     if args is not None:
+        candidate = (float(y0), float(y1))
+        previous_candidate = getattr(args, "_blackbar_candidate_y", None)
+        stable_count = getattr(args, "_blackbar_stable_count", 0)
+        stable_frames = max(1, int(args.blackbar_stable_frames))
+        if previous_candidate is None or max(abs(candidate[0] - previous_candidate[0]), abs(candidate[1] - previous_candidate[1])) > 3:
+            args._blackbar_candidate_y = candidate
+            args._blackbar_stable_count = 1
+            previous = getattr(args, "_blackbar_crop_y", None)
+            if previous is not None:
+                y0, y1 = int(round(previous[0])), int(round(previous[1]))
+                return frame[y0:y1, 0:w]
+        else:
+            stable_count += 1
+            args._blackbar_stable_count = stable_count
+            if stable_count < stable_frames:
+                previous = getattr(args, "_blackbar_crop_y", None)
+                if previous is not None:
+                    y0, y1 = int(round(previous[0])), int(round(previous[1]))
+                    return frame[y0:y1, 0:w]
+
         previous = getattr(args, "_blackbar_crop_y", None)
         if previous is None:
-            smoothed = (float(y0), float(y1))
+            smoothed = candidate
         else:
             alpha = 0.12
             prev_y0, prev_y1 = previous
@@ -407,6 +492,56 @@ def crop_black_bars(frame, threshold, margin, args=None):
         y0, y1 = int(round(smoothed[0])), int(round(smoothed[1]))
 
     return frame[y0:y1, 0:w]
+
+
+def order_corners(points):
+    pts = np.asarray(points, dtype=np.float32)
+    sums = pts.sum(axis=1)
+    diffs = np.diff(pts, axis=1).reshape(-1)
+    return np.array(
+        [
+            pts[np.argmin(sums)],
+            pts[np.argmin(diffs)],
+            pts[np.argmax(sums)],
+            pts[np.argmax(diffs)],
+        ],
+        dtype=np.float32,
+    )
+
+
+def detect_screen_corners(frame, args):
+    now = time.time()
+    if now - getattr(args, "_last_screen_detect_time", 0.0) < args.auto_screen_detect_interval:
+        return getattr(args, "_auto_corners", None)
+    args._last_screen_detect_time = now
+
+    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+    blurred = cv2.GaussianBlur(gray, (5, 5), 0)
+    _, thresh = cv2.threshold(blurred, args.auto_screen_threshold, 255, cv2.THRESH_BINARY)
+    contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    if not contours:
+        return getattr(args, "_auto_corners", None)
+
+    h, w = frame.shape[:2]
+    min_area = (w * h) * args.auto_screen_min_area
+    best = None
+    best_area = 0
+    for contour in contours:
+        area = cv2.contourArea(contour)
+        if area < min_area or area <= best_area:
+            continue
+        peri = cv2.arcLength(contour, True)
+        approx = cv2.approxPolyDP(contour, 0.025 * peri, True)
+        if len(approx) != 4:
+            rect = cv2.boxPoints(cv2.minAreaRect(contour))
+        else:
+            rect = approx.reshape(4, 2)
+        best = order_corners(rect)
+        best_area = area
+
+    if best is not None:
+        args._auto_corners = best
+    return getattr(args, "_auto_corners", None)
 
 
 def perspective_matrix(corners, output_width, output_height):
@@ -469,6 +604,18 @@ def read_frame(args, camera):
         frame = camera.capture_array()
         if frame is None:
             return None
+        args._frames_read = getattr(args, "_frames_read", 0) + 1
+        if args.exposure_lock_frames > 0 and not getattr(args, "_exposure_locked", False) and args._frames_read >= args.exposure_lock_frames:
+            with contextlib.suppress(Exception):
+                metadata = camera.capture_metadata()
+                controls = {"AeEnable": False}
+                if "ExposureTime" in metadata:
+                    controls["ExposureTime"] = metadata["ExposureTime"]
+                if "AnalogueGain" in metadata:
+                    controls["AnalogueGain"] = metadata["AnalogueGain"]
+                camera.set_controls(controls)
+                args._exposure_locked = True
+                print(f"Locked exposure controls: {controls}")
         # We request BGR888 above. If a different platform returns RGB data,
         # pass --picamera-color-space rgb to convert it back to internal BGR.
         if args.picamera_color_space == "rgb":
@@ -495,8 +642,14 @@ def process_frame(frame, args, matrix):
     if args.rotate != 0.0:
         frame = rotate_frame(frame, args.rotate)
 
-    if matrix is not None:
-        processed = cv2.warpPerspective(frame, matrix, (args.persp_width, args.persp_height))
+    active_matrix = matrix
+    if args.auto_screen_detect:
+        detected = detect_screen_corners(frame, args)
+        if detected is not None:
+            active_matrix = perspective_matrix(detected, args.persp_width, args.persp_height)
+
+    if active_matrix is not None:
+        processed = cv2.warpPerspective(frame, active_matrix, (args.persp_width, args.persp_height))
         if args.blackbar_detect:
             processed = crop_black_bars(processed, args.blackbar_threshold, args.blackbar_margin, args)
             processed = cv2.resize(processed, (args.persp_width, args.persp_height), interpolation=cv2.INTER_AREA)
@@ -529,6 +682,11 @@ CALIBRATION_FIELDS = {
     "blackbar_detect": parse_bool,
     "blackbar_threshold": float,
     "blackbar_margin": float,
+    "blackbar_stable_frames": int,
+    "auto_screen_detect": parse_bool,
+    "auto_screen_detect_interval": float,
+    "auto_screen_threshold": float,
+    "auto_screen_min_area": float,
     "smoothing_enabled": parse_bool,
     "smoothing_attack": float,
     "smoothing_decay": float,
@@ -560,7 +718,13 @@ def calibration_config(args):
         "blackbar_detect": args.blackbar_detect,
         "blackbar_threshold": args.blackbar_threshold,
         "blackbar_margin": args.blackbar_margin,
+        "blackbar_stable_frames": args.blackbar_stable_frames,
+        "auto_screen_detect": args.auto_screen_detect,
+        "auto_screen_detect_interval": args.auto_screen_detect_interval,
+        "auto_screen_threshold": args.auto_screen_threshold,
+        "auto_screen_min_area": args.auto_screen_min_area,
         "smoothing_enabled": args.smoothing_enabled,
+        "pi_smoothing_enabled": args.pi_smoothing_enabled,
         "smoothing_attack": args.smoothing_attack,
         "smoothing_decay": args.smoothing_decay,
         "smoothing_threshold": args.smoothing_threshold,
@@ -721,6 +885,13 @@ async def run(args):
         if args.corners is not None
         else None
     )
+    udp_socket = None
+    udp_target = None
+    if args.output_transport == "udp":
+        udp_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        udp_socket.setblocking(False)
+        udp_target = (args.udp_host, args.udp_port)
+        print(f"UDP LED output enabled: {udp_target[0]}:{udp_target[1]}")
 
     camera = None
     receiver_task = None
@@ -739,6 +910,7 @@ async def run(args):
             sent_since_report = 0
             last_fps_report = time.time()
             loop_count = 0
+            frame_sequence = 0
             t0 = time.time()
 
             while True:
@@ -817,18 +989,7 @@ async def run(args):
                             f"target RGB {patch['target_rgb']}; solved={solved is not None}"
                         )
 
-                    colors = []
-                    for x1, y1, x2, y2 in zones:
-                        bgr = avg_color_bgr(
-                            processed[y1:y2, x1:x2],
-                            args.black_level,
-                            args.red_gain,
-                            args.green_gain,
-                            args.blue_gain,
-                            args.saturation,
-                            args.color_matrix,
-                        )
-                        colors.append(color_from_bgr(bgr, args.color_order))
+                    colors = colors_from_zones(processed, zones, args)
 
                 colors = apply_led_offset(colors, args.led_offset)
                 colors = smooth_led_colors(args, colors)
@@ -844,9 +1005,17 @@ async def run(args):
                         payload["image"] = encoded
                         payload["frame"] = encoded
 
-                if args.binary_output and not args.send_frame:
-                    await websocket.send(encode_binary_frame(colors))
+                frame_sequence = (frame_sequence + 1) & 0xFFFFFFFF
+                if args.output_transport == "udp":
+                    if udp_socket is not None and udp_target is not None:
+                        with contextlib.suppress(OSError):
+                            udp_socket.sendto(encode_binary_frame(colors, frame_sequence, "AMB2"), udp_target)
+                    if loop_count % max(1, int(args.fps)) == 0:
+                        await websocket.send(json.dumps(calibration_config(args)))
+                elif args.binary_output and not args.send_frame:
+                    await websocket.send(encode_binary_frame(colors, frame_sequence, args.binary_protocol))
                 else:
+                    payload["seq"] = frame_sequence
                     await websocket.send(json.dumps(payload))
 
                 loop_count += 1
@@ -870,6 +1039,8 @@ async def run(args):
             with contextlib.suppress(asyncio.CancelledError):
                 await receiver_task
         close_camera(args, camera)
+        if udp_socket is not None:
+            udp_socket.close()
         try:
             cv2.destroyAllWindows()
         except Exception:
@@ -955,18 +1126,30 @@ def parse_args():
     p.add_argument("--blackbar-detect", action="store_true", default=False)
     p.add_argument("--blackbar-threshold", type=float, default=22.0)
     p.add_argument("--blackbar-margin", type=float, default=0.02)
+    p.add_argument("--blackbar-stable-frames", type=int, default=8)
+    p.add_argument("--auto-screen-detect", action="store_true", default=False)
+    p.add_argument("--auto-screen-detect-interval", type=float, default=2.0)
+    p.add_argument("--auto-screen-threshold", type=float, default=28.0)
+    p.add_argument("--auto-screen-min-area", type=float, default=0.12)
     p.add_argument("--smoothing-enabled", action="store_true", default=True)
     p.add_argument("--no-smoothing", dest="smoothing_enabled", action="store_false")
+    p.add_argument("--pi-smoothing-enabled", action="store_true", default=True)
+    p.add_argument("--no-pi-smoothing", dest="pi_smoothing_enabled", action="store_false")
     p.add_argument("--smoothing-attack", type=float, default=0.75)
     p.add_argument("--smoothing-decay", type=float, default=0.28)
     p.add_argument("--smoothing-threshold", type=float, default=18.0)
     p.add_argument("--reconnect-delay", type=float, default=3.0)
+    p.add_argument("--exposure-lock-frames", type=int, default=90)
     p.add_argument(
         "--binary-output",
         action="store_true",
         default=False,
         help="Send compact binary LED frames instead of JSON. Disable preview/send-frame when using this.",
     )
+    p.add_argument("--binary-protocol", choices=["AMB1", "AMB2"], default="AMB1")
+    p.add_argument("--output-transport", choices=["websocket", "udp"], default="websocket")
+    p.add_argument("--udp-host", type=str, default="127.0.0.1")
+    p.add_argument("--udp-port", type=int, default=8766)
 
     args = p.parse_args()
     if args.config:
@@ -979,6 +1162,12 @@ def parse_args():
         p.error("--sample-depth must be > 0 and <= 0.5")
     if not (0.0 <= args.sample_inset <= 0.25):
         p.error("--sample-inset must be >= 0 and <= 0.25")
+    if args.blackbar_stable_frames < 1:
+        p.error("--blackbar-stable-frames must be >= 1")
+    if args.auto_screen_detect_interval <= 0:
+        p.error("--auto-screen-detect-interval must be > 0")
+    if not (0.01 <= args.auto_screen_min_area <= 0.95):
+        p.error("--auto-screen-min-area must be between 0.01 and 0.95")
     if args.red_gain < 0 or args.green_gain < 0 or args.blue_gain < 0:
         p.error("--red-gain, --green-gain, and --blue-gain must be >= 0")
     if not (0.0 <= args.brightness <= 1.0):
@@ -989,6 +1178,12 @@ def parse_args():
         p.error("--smoothing-attack must be between 0 and 1")
     if not (0.0 <= args.smoothing_decay <= 1.0):
         p.error("--smoothing-decay must be between 0 and 1")
+    if args.binary_protocol not in {"AMB1", "AMB2"}:
+        p.error("--binary-protocol must be AMB1 or AMB2")
+    if args.output_transport not in {"websocket", "udp"}:
+        p.error("--output-transport must be websocket or udp")
+    if not (1 <= int(args.udp_port) <= 65535):
+        p.error("--udp-port must be between 1 and 65535")
     args.auto_samples = {}
     args.pending_auto_sample = None
     args.pending_patch_sample = None
@@ -1028,12 +1223,23 @@ def load_config_into_args(args, config_path):
         "blackbar_detect": "blackbar_detect",
         "blackbar_threshold": "blackbar_threshold",
         "blackbar_margin": "blackbar_margin",
+        "blackbar_stable_frames": "blackbar_stable_frames",
+        "auto_screen_detect": "auto_screen_detect",
+        "auto_screen_detect_interval": "auto_screen_detect_interval",
+        "auto_screen_threshold": "auto_screen_threshold",
+        "auto_screen_min_area": "auto_screen_min_area",
         "smoothing_enabled": "smoothing_enabled",
+        "pi_smoothing_enabled": "pi_smoothing_enabled",
         "smoothing_attack": "smoothing_attack",
         "smoothing_decay": "smoothing_decay",
         "smoothing_threshold": "smoothing_threshold",
         "reconnect_delay": "reconnect_delay",
+        "exposure_lock_frames": "exposure_lock_frames",
         "binary_output": "binary_output",
+        "binary_protocol": "binary_protocol",
+        "output_transport": "output_transport",
+        "udp_host": "udp_host",
+        "udp_port": "udp_port",
     }
     for key, attr in field_map.items():
         if key in data:
