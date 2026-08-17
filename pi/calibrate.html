@@ -270,6 +270,7 @@
 
       <div class="buttons">
         <button id="copy">Copy args</button>
+        <button class="secondary" id="restoreDefaults">Restore defaults</button>
         <button class="secondary" id="neutral">Neutral gains</button>
         <button class="secondary" id="warmer">Less green/blue</button>
       </div>
@@ -364,6 +365,24 @@
       color_matrix: [1, 0, 0, 0, 1, 0, 0, 0, 1],
       auto_samples: {},
       blackbar_detect: false,
+      blackbar_threshold: 22,
+      blackbar_margin: 0.02,
+      smoothing_enabled: true,
+      smoothing_attack: 0.75,
+      smoothing_decay: 0.28,
+      smoothing_threshold: 18
+    };
+    const knownGoodDefaults = {
+      red_gain: 1.0,
+      green_gain: 0.92,
+      blue_gain: 0.85,
+      saturation: 1.0,
+      black_level: 35,
+      brightness: 1.0,
+      led_offset: 0,
+      color_order: "bgr",
+      color_matrix: [1, 0, 0, 0, 1, 0, 0, 0, 1],
+      blackbar_detect: true,
       blackbar_threshold: 22,
       blackbar_margin: 0.02,
       smoothing_enabled: true,
@@ -701,6 +720,13 @@
 
     document.getElementById("copy").addEventListener("click", async () => {
       await navigator.clipboard.writeText(cliArgs());
+    });
+
+    document.getElementById("restoreDefaults").addEventListener("click", () => {
+      Object.assign(state, knownGoodDefaults, { auto_samples: state.auto_samples || {} });
+      renderControls();
+      sendCalibration();
+      systemStatusEl.textContent = "Restored known-good defaults live. Use Save to config.json if they look right.";
     });
 
     document.getElementById("neutral").addEventListener("click", () => {
