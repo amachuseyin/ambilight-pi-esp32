@@ -311,6 +311,31 @@
         <input id="blackbar_threshold" type="range" min="0" max="80" step="1">
         <input data-for="blackbar_threshold" type="number" min="0" step="1">
       </div>
+      <div class="control">
+        <label for="blackbar_margin">Bar margin</label>
+        <input id="blackbar_margin" type="range" min="0" max="0.12" step="0.005">
+        <input data-for="blackbar_margin" type="number" min="0" step="0.005">
+      </div>
+      <div class="control">
+        <label for="smoothing_enabled">Smoothing</label>
+        <input id="smoothing_enabled" type="checkbox">
+        <span class="hint">anti-flicker</span>
+      </div>
+      <div class="control">
+        <label for="smoothing_attack">Fast changes</label>
+        <input id="smoothing_attack" type="range" min="0.10" max="1.00" step="0.01">
+        <input data-for="smoothing_attack" type="number" min="0" max="1" step="0.01">
+      </div>
+      <div class="control">
+        <label for="smoothing_decay">Tiny changes</label>
+        <input id="smoothing_decay" type="range" min="0.05" max="1.00" step="0.01">
+        <input data-for="smoothing_decay" type="number" min="0" max="1" step="0.01">
+      </div>
+      <div class="control">
+        <label for="smoothing_threshold">Smooth limit</label>
+        <input id="smoothing_threshold" type="range" min="0" max="80" step="1">
+        <input data-for="smoothing_threshold" type="number" min="0" step="1">
+      </div>
       <div class="buttons">
         <button id="saveConfig">Save to config.json</button>
         <button class="secondary" id="refreshStatus">Refresh status</button>
@@ -334,10 +359,14 @@
       auto_samples: {},
       blackbar_detect: false,
       blackbar_threshold: 22,
-      blackbar_margin: 0.02
+      blackbar_margin: 0.02,
+      smoothing_enabled: true,
+      smoothing_attack: 0.75,
+      smoothing_decay: 0.28,
+      smoothing_threshold: 18
     };
     const state = { ...defaults };
-    const numericFields = ["red_gain", "green_gain", "blue_gain", "saturation", "black_level", "led_offset", "blackbar_threshold"];
+    const numericFields = ["red_gain", "green_gain", "blue_gain", "saturation", "black_level", "led_offset", "blackbar_threshold", "blackbar_margin", "smoothing_attack", "smoothing_decay", "smoothing_threshold"];
     const statusEl = document.getElementById("status");
     const previewEl = document.getElementById("preview");
     const previewWrapEl = document.getElementById("previewWrap");
@@ -360,6 +389,7 @@
     function formatNumber(value, field) {
       if (field === "black_level" || field === "led_offset") return String(Math.round(Number(value)));
       if (field === "blackbar_threshold") return String(Math.round(Number(value)));
+      if (field === "smoothing_threshold") return String(Math.round(Number(value)));
       return Number(value).toFixed(2);
     }
 
@@ -401,6 +431,7 @@
       }
       document.getElementById("color_order").value = state.color_order;
       document.getElementById("blackbar_detect").checked = Boolean(state.blackbar_detect);
+      document.getElementById("smoothing_enabled").checked = Boolean(state.smoothing_enabled);
       argsEl.value = cliArgs();
       renderAutoStatus();
     }
@@ -520,6 +551,10 @@
       argsEl.value = cliArgs();
       sendCalibration();
     });
+    document.getElementById("smoothing_enabled").addEventListener("change", (event) => {
+      state.smoothing_enabled = event.target.checked;
+      sendCalibration();
+    });
 
     function configPayload() {
       return {
@@ -533,7 +568,11 @@
         led_offset: Math.round(Number(state.led_offset)),
         blackbar_detect: Boolean(state.blackbar_detect),
         blackbar_threshold: Number(state.blackbar_threshold),
-        blackbar_margin: Number(state.blackbar_margin || 0.02)
+        blackbar_margin: Number(state.blackbar_margin || 0.02),
+        smoothing_enabled: Boolean(state.smoothing_enabled),
+        smoothing_attack: Number(state.smoothing_attack),
+        smoothing_decay: Number(state.smoothing_decay),
+        smoothing_threshold: Number(state.smoothing_threshold)
       };
     }
 
@@ -545,7 +584,20 @@
 
     async function refreshStatus() {
       const data = await api("/api/status");
-      systemStatusEl.textContent = JSON.stringify(data, null, 2);
+      const health = data.system || {};
+      const mem = health.memory || {};
+      systemStatusEl.textContent = [
+        `ESP/viewers: ${data.viewers} ${JSON.stringify(data.viewer_peers || [])}`,
+        `Capture/producers: ${data.producers} ${JSON.stringify(data.producer_peers || [])}`,
+        `FPS: ${data.fps ?? "n/a"}`,
+        `Last frame age: ${data.last_frame_age_sec ?? "n/a"}s`,
+        `Frames routed: ${data.frames_routed}`,
+        `CPU temp: ${health.cpu_temp_c ?? "n/a"} C`,
+        `Load: ${JSON.stringify(health.load_avg || [])}`,
+        `Memory: ${mem.used_mb ?? "n/a"} / ${mem.total_mb ?? "n/a"} MB (${mem.used_percent ?? "n/a"}%)`,
+        "",
+        JSON.stringify(data, null, 2)
+      ].join("\n");
     }
 
     document.getElementById("saveConfig").addEventListener("click", async () => {
@@ -678,6 +730,7 @@
         setTimeout(connect, 1000);
       });
       ws.addEventListener("message", (event) => {
+        if (typeof event.data !== "string") return;
         const data = JSON.parse(event.data);
         if (data.type === "config") {
           for (const key of Object.keys(state)) {

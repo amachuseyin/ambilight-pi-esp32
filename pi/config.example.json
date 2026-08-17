@@ -25,6 +25,10 @@
   "blackbar_detect": true,
   "blackbar_threshold": 22.0,
   "blackbar_margin": 0.02,
+  "smoothing_enabled": true,
+  "smoothing_attack": 0.75,
+  "smoothing_decay": 0.28,
+  "smoothing_threshold": 18.0,
   "picamera_color_space": "bgr",
   "reconnect_delay": 3.0
 }

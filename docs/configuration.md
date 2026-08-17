@@ -23,6 +23,10 @@ Important fields:
 - `blackbar_detect`: crops letterbox bars before sampling.
 - `blackbar_threshold`: brightness threshold for active picture detection.
 - `blackbar_margin`: padding around detected active picture.
+- `smoothing_enabled`: enables anti-flicker LED color smoothing.
+- `smoothing_attack`: smoothing factor for larger changes, from 0 to 1.
+- `smoothing_decay`: smoothing factor for small noisy changes, from 0 to 1.
+- `smoothing_threshold`: color delta threshold between decay and attack.
 
 After changing config manually:
 

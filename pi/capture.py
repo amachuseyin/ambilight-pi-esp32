@@ -253,6 +253,26 @@ def apply_led_offset(colors, offset):
     return colors[shift:] + colors[:shift]
 
 
+def smooth_led_colors(args, colors):
+    if not args.smoothing_enabled:
+        args._smoothed_colors = None
+        return colors
+    current = np.asarray(colors, dtype=np.float32)
+    previous = getattr(args, "_smoothed_colors", None)
+    if previous is None or previous.shape != current.shape:
+        args._smoothed_colors = current
+        return colors
+
+    attack = max(0.0, min(1.0, float(args.smoothing_attack)))
+    decay = max(0.0, min(1.0, float(args.smoothing_decay)))
+    threshold = max(0.0, float(args.smoothing_threshold))
+    delta = np.max(np.abs(current - previous), axis=1, keepdims=True)
+    alpha = np.where(delta >= threshold, attack, decay).astype(np.float32)
+    smoothed = (previous * (1.0 - alpha)) + (current * alpha)
+    args._smoothed_colors = smoothed
+    return np.clip(np.rint(smoothed), 0, 255).astype(np.uint8).tolist()
+
+
 def encode_binary_frame(colors):
     # Binary frame format:
     #   bytes 0..3: "AMB1"
@@ -500,6 +520,10 @@ CALIBRATION_FIELDS = {
     "blackbar_detect": parse_bool,
     "blackbar_threshold": float,
     "blackbar_margin": float,
+    "smoothing_enabled": parse_bool,
+    "smoothing_attack": float,
+    "smoothing_decay": float,
+    "smoothing_threshold": float,
 }
 
 
@@ -526,6 +550,10 @@ def calibration_config(args):
         "blackbar_detect": args.blackbar_detect,
         "blackbar_threshold": args.blackbar_threshold,
         "blackbar_margin": args.blackbar_margin,
+        "smoothing_enabled": args.smoothing_enabled,
+        "smoothing_attack": args.smoothing_attack,
+        "smoothing_decay": args.smoothing_decay,
+        "smoothing_threshold": args.smoothing_threshold,
     }
 
 
@@ -554,7 +582,9 @@ def apply_calibration_update(args, data):
             continue
         if field == "color_order" and value not in CHANNEL_ORDERS:
             continue
-        if field in {"red_gain", "green_gain", "blue_gain", "saturation", "black_level"} and value < 0:
+        if field in {"red_gain", "green_gain", "blue_gain", "saturation", "black_level", "smoothing_attack", "smoothing_decay", "smoothing_threshold"} and value < 0:
+            continue
+        if field in {"smoothing_attack", "smoothing_decay"} and value > 1:
             continue
         setattr(args, field, value)
         changed.append(field)
@@ -789,6 +819,7 @@ async def run(args):
                         colors.append(color_from_bgr(bgr, args.color_order))
 
                 colors = apply_led_offset(colors, args.led_offset)
+                colors = smooth_led_colors(args, colors)
                 payload = {"type": "frame", "colors": colors}
 
                 if args.send_frame and loop_count % args.frame_every == 0:
@@ -910,6 +941,11 @@ def parse_args():
     p.add_argument("--blackbar-detect", action="store_true", default=False)
     p.add_argument("--blackbar-threshold", type=float, default=22.0)
     p.add_argument("--blackbar-margin", type=float, default=0.02)
+    p.add_argument("--smoothing-enabled", action="store_true", default=True)
+    p.add_argument("--no-smoothing", dest="smoothing_enabled", action="store_false")
+    p.add_argument("--smoothing-attack", type=float, default=0.75)
+    p.add_argument("--smoothing-decay", type=float, default=0.28)
+    p.add_argument("--smoothing-threshold", type=float, default=18.0)
     p.add_argument("--reconnect-delay", type=float, default=3.0)
     p.add_argument(
         "--binary-output",
@@ -933,9 +969,14 @@ def parse_args():
         p.error("--red-gain, --green-gain, and --blue-gain must be >= 0")
     if args.saturation < 0:
         p.error("--saturation must be >= 0")
+    if not (0.0 <= args.smoothing_attack <= 1.0):
+        p.error("--smoothing-attack must be between 0 and 1")
+    if not (0.0 <= args.smoothing_decay <= 1.0):
+        p.error("--smoothing-decay must be between 0 and 1")
     args.auto_samples = {}
     args.pending_auto_sample = None
     args.pending_patch_sample = None
+    args._smoothed_colors = None
     return args
 
 
@@ -970,6 +1011,10 @@ def load_config_into_args(args, config_path):
         "blackbar_detect": "blackbar_detect",
         "blackbar_threshold": "blackbar_threshold",
         "blackbar_margin": "blackbar_margin",
+        "smoothing_enabled": "smoothing_enabled",
+        "smoothing_attack": "smoothing_attack",
+        "smoothing_decay": "smoothing_decay",
+        "smoothing_threshold": "smoothing_threshold",
         "reconnect_delay": "reconnect_delay",
         "binary_output": "binary_output",
     }

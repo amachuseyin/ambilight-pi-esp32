@@ -13,6 +13,7 @@ frames and drives an SK6812 RGBW or compatible NeoPixel strip.
 - `pi/run_ambilight.sh` - starts the Pi relay and capture process.
 - `pi/install_service.sh` - installs a systemd boot service on the Pi.
 - `esp32/ambilight_esp32/ambilight_esp32.ino` - ESP32 LED receiver firmware.
+- `docs/esp32-ota.md` - OTA firmware update notes.
 
 ## Hardware
 
@@ -161,6 +162,34 @@ The detector crops top/bottom black bars before sampling and smooths crop change
 to avoid flicker. If it reacts too much in dark scenes, disable it or raise/lower
 `blackbar_threshold` in small steps.
 
+The dashboard exposes black-bar controls:
+
+- `Black bars`: enable/disable automatic top/bottom crop.
+- `Bar threshold`: how bright a row must be to count as active picture.
+- `Bar margin`: padding around the detected active picture.
+
+## Anti-Flicker Smoothing
+
+The capture process can smooth LED colors without changing the source image.
+The default values are intentionally modest:
+
+```json
+"smoothing_enabled": true,
+"smoothing_attack": 0.75,
+"smoothing_decay": 0.28,
+"smoothing_threshold": 18.0
+```
+
+Meaning:
+
+- `smoothing_attack`: response for larger color changes.
+- `smoothing_decay`: response for small noisy changes.
+- `smoothing_threshold`: boundary between small and large changes.
+
+Raise `smoothing_decay` for less smoothing and faster response. Lower it for
+steadier LEDs. Turn smoothing off from the dashboard if absolute lowest latency
+matters more than flicker control.
+
 ## Latency Tuning
 
 The example config is set up for low latency:
@@ -192,6 +221,22 @@ Recommended latency settings:
 
 If the ESP32 firmware does not include binary frame support yet, set
 `binary_output` back to `false`.
+
+## Dashboard Health
+
+The dashboard status panel shows:
+
+- ESP/viewer connection count and IP/port.
+- Capture producer connection count.
+- Current routed FPS.
+- Last frame age.
+- Pi CPU temperature, load average, and memory usage.
+
+The raw endpoint is also available:
+
+```bash
+curl http://127.0.0.1:8080/api/status
+```
 
 ## Troubleshooting
 

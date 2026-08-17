@@ -29,9 +29,13 @@ import websockets
 
 viewers = set()
 producers = set()
+client_info = {}
 last_config = None  # cache so late-joining viewers get the current zone layout
 frames_routed = 0
 last_frame_time = None
+fps_window_start = time.time()
+fps_window_frames = 0
+current_fps = 0.0
 started_at = time.time()
 CONFIG_PATH = Path(__file__).with_name("config.json")
 SERVICE_NAME = "ambilight-led.service"
@@ -48,8 +52,52 @@ def set_tcp_nodelay(websocket):
         sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
 
 
+def peer_label(websocket):
+    peer = websocket.remote_address
+    if isinstance(peer, tuple) and len(peer) >= 2:
+        return f"{peer[0]}:{peer[1]}"
+    return str(peer)
+
+
+def read_cpu_temp_c():
+    for path in (Path("/sys/class/thermal/thermal_zone0/temp"),):
+        with contextlib.suppress(Exception):
+            return round(float(path.read_text().strip()) / 1000.0, 1)
+    return None
+
+
+def read_meminfo():
+    values = {}
+    with contextlib.suppress(Exception):
+        for line in Path("/proc/meminfo").read_text().splitlines():
+            key, raw = line.split(":", 1)
+            values[key] = int(raw.strip().split()[0])
+    total = values.get("MemTotal")
+    available = values.get("MemAvailable")
+    if not total or available is None:
+        return None
+    used = total - available
+    return {
+        "total_mb": round(total / 1024),
+        "used_mb": round(used / 1024),
+        "available_mb": round(available / 1024),
+        "used_percent": round((used / total) * 100, 1),
+    }
+
+
+def system_health():
+    load = None
+    with contextlib.suppress(OSError):
+        load = [round(v, 2) for v in __import__("os").getloadavg()]
+    return {
+        "cpu_temp_c": read_cpu_temp_c(),
+        "load_avg": load,
+        "memory": read_meminfo(),
+    }
+
+
 async def handler(websocket):
-    global last_config, frames_routed, last_frame_time
+    global last_config, frames_routed, last_frame_time, fps_window_start, fps_window_frames, current_fps
     set_tcp_nodelay(websocket)
 
     # First message from any client declares its role.
@@ -61,6 +109,7 @@ async def handler(websocket):
         return
 
     role = data.get("role", "viewer")
+    client_info[websocket] = {"role": role, "peer": peer_label(websocket), "connected_at": time.time()}
 
     if role == "producer":
         producers.add(websocket)
@@ -91,11 +140,18 @@ async def handler(websocket):
 
                 if msg_type == "frame":
                     frames_routed += 1
+                    fps_window_frames += 1
                     last_frame_time = time.time()
+                    elapsed = last_frame_time - fps_window_start
+                    if elapsed >= 2.0:
+                        current_fps = fps_window_frames / elapsed
+                        fps_window_start = last_frame_time
+                        fps_window_frames = 0
                     if frames_routed % 300 == 0:
                         print(f"Routed {frames_routed} frames to {len(viewers)} viewer(s).")
         finally:
             producers.discard(websocket)
+            client_info.pop(websocket, None)
             print("Producer disconnected.")
     else:
         viewers.add(websocket)
@@ -124,6 +180,7 @@ async def handler(websocket):
             print(f"Viewer connection closed ({exc.code}).")
         finally:
             viewers.discard(websocket)
+            client_info.pop(websocket, None)
             print(f"Viewer disconnected. ({len(viewers)} total)")
 
 
@@ -134,10 +191,14 @@ def public_status():
         "uptime_sec": round(now - started_at, 1),
         "viewers": len(viewers),
         "producers": len(producers),
+        "viewer_peers": [client_info.get(v, {}).get("peer") for v in viewers],
+        "producer_peers": [client_info.get(p, {}).get("peer") for p in producers],
         "frames_routed": frames_routed,
+        "fps": round(current_fps, 1),
         "last_frame_age_sec": None if last_frame_time is None else round(now - last_frame_time, 2),
         "has_config": last_config is not None,
         "config_path": str(CONFIG_PATH),
+        "system": system_health(),
     }
 
 
